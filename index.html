@@ -345,8 +345,8 @@
       <p>BluestoneX UK — Americas 2026</p>
     </div>
     <nav>
-      <button class="nav-btn" onclick="showView('podium',event)">🏆 Podium</button>
-      <button class="nav-btn active" onclick="showView('overview',event)">Overview</button>
+      <button class="nav-btn active" onclick="showView('podium',event)">🏆 Podium</button>
+      <button class="nav-btn" onclick="showView('overview',event)">Overview</button>
       <button class="nav-btn" onclick="showView('groups',event)">Groups</button>
       <button class="nav-btn" onclick="showView('results',event)">Results</button>
       <button class="nav-btn" onclick="showView('bracket',event)">Bracket</button>
@@ -359,11 +359,11 @@
 </header>
 
 <main>
-  <div id="view-podium" class="view">
+  <div id="view-podium" class="view active">
     <div id="podium-content"></div>
   </div>
 
-  <div id="view-overview" class="view active">
+  <div id="view-overview" class="view">
     <div class="overview-grid">
       <div class="stat-card"><div class="stat-num">48</div><div class="stat-label">Teams</div></div>
       <div class="stat-card"><div class="stat-num">12</div><div class="stat-label">Groups</div></div>
@@ -893,7 +893,6 @@ function renderPodium() {
   const first  = finalResult ? finalResult.winner : null;
   const second = finalResult ? (finalResult.winner === finalResult.homeTeam ? finalResult.awayTeam : finalResult.homeTeam) : null;
 
-  // Find which player owns the World Cup winning team
   function ownerOfTeam(teamName) {
     if (!teamName) return null;
     for (const [owner, teams] of Object.entries(DRAW)) {
@@ -902,38 +901,69 @@ function renderPodium() {
     return null;
   }
 
-  // 3rd place = highest points in leaderboard (excluding 1st/2nd if known)
-  const third     = ranked[0] || null;
-  const woodenSpoon = ranked[ranked.length - 1] || null;
-
   const tournamentOver = !!finalResult;
 
-  const podiumCard = (medal, title, subtitle, owner, teamName, pts, description, locked) => `
+  // 3rd & 4th come from the losing semi-finalists — locked until semis are played
+  const sf1Result = KO['sf_0'];
+  const sf2Result = KO['sf_1'];
+  const semisPlayed = !!(sf1Result && sf2Result);
+
+  function loserOf(sfResult) {
+    if (!sfResult) return null;
+    return sfResult.winner === sfResult.homeTeam ? sfResult.awayTeam : sfResult.homeTeam;
+  }
+
+  const thirdTeam  = loserOf(sf1Result);
+  const fourthTeam = loserOf(sf2Result);
+  const third  = semisPlayed ? { owner: ownerOfTeam(thirdTeam),  team: thirdTeam }  : null;
+  const fourth = semisPlayed ? { owner: ownerOfTeam(fourthTeam), team: fourthTeam } : null;
+
+  // Group winners — player who owns the top team in each group
+  const groupWinners = {};
+  Object.keys(GROUPS).sort().forEach(g => {
+    const standings = calcStandings(g);
+    if (!standings.length) return;
+    const topTeam = standings[0];
+    if (topTeam.mp === 0) return; // no games played yet
+    const owner = ownerOfTeam(topTeam.name);
+    if (owner) groupWinners[g] = { owner, team: topTeam.name, pts: topTeam.pts };
+  });
+
+  // Aggregate group winner prize money per player (£5 per group win)
+  const groupWinnerPrizes = {};
+  Object.values(groupWinners).forEach(({ owner, team }) => {
+    if (!groupWinnerPrizes[owner]) groupWinnerPrizes[owner] = { total: 0, groups: [] };
+    groupWinnerPrizes[owner].total += 5;
+    groupWinnerPrizes[owner].groups.push(team);
+  });
+
+  const podiumCard = (medal, title, prize, subtitle, owner, teamName, pts, description, locked) => `
     <div style="
       background:var(--wc-card);border:1px solid var(--wc-border);border-radius:12px;
-      padding:28px 24px;text-align:center;position:relative;overflow:hidden;
-      ${locked ? 'opacity:0.6;' : ''}
+      padding:24px 20px;text-align:center;position:relative;overflow:hidden;
+      ${locked ? 'opacity:0.55;' : ''}
     ">
       <div style="position:absolute;top:0;left:0;right:0;height:4px;background:${
         medal==='🥇'?'linear-gradient(90deg,#D4A017,#F0C030)':
         medal==='🥈'?'linear-gradient(90deg,#A8A9AD,#D0D0D5)':
         medal==='🥉'?'linear-gradient(90deg,#CD7F32,#E8A050)':
-        'linear-gradient(90deg,#5B3A2A,#8B6040)'
+        'linear-gradient(90deg,#4A90D9,#7BB8F0)'
       }"></div>
-      <div style="font-size:3rem;margin-bottom:8px;">${medal}</div>
-      <div style="font-family:'Bebas Neue',cursive;font-size:1.3rem;letter-spacing:2px;color:var(--wc-gold);margin-bottom:4px;">${title}</div>
-      <div style="font-size:0.78rem;color:var(--wc-muted);margin-bottom:16px;">${description}</div>
+      <div style="font-size:2.6rem;margin-bottom:6px;">${medal}</div>
+      <div style="font-family:'Bebas Neue',cursive;font-size:1.2rem;letter-spacing:2px;color:var(--wc-gold);margin-bottom:2px;">${title}</div>
+      <div style="font-family:'Bebas Neue',cursive;font-size:1.8rem;color:#4CAF50;letter-spacing:1px;margin-bottom:8px;">${prize}</div>
+      <div style="font-size:0.72rem;color:var(--wc-muted);margin-bottom:14px;">${description}</div>
       ${locked ? `
-        <div style="font-size:2rem;margin-bottom:8px;">🔒</div>
-        <div style="font-size:0.82rem;color:var(--wc-muted);">To be announced at the end of the tournament</div>
+        <div style="font-size:1.8rem;margin-bottom:6px;">🔒</div>
+        <div style="font-size:0.78rem;color:var(--wc-muted);">Announced after the Semi-Finals</div>
       ` : `
-        <div style="font-size:0.9rem;color:var(--wc-muted);margin-bottom:6px;">${subtitle}</div>
-        <div style="font-family:'Bebas Neue',cursive;font-size:2.2rem;color:var(--wc-white);line-height:1;">${owner || '—'}</div>
-        ${teamName ? `<div style="font-size:0.82rem;color:var(--wc-muted);margin-top:4px;">${FLAGS[teamName]||'🌐'} ${teamName}</div>` : ''}
+        <div style="font-size:0.82rem;color:var(--wc-muted);margin-bottom:4px;">${subtitle}</div>
+        <div style="font-family:'Bebas Neue',cursive;font-size:2rem;color:var(--wc-white);line-height:1;">${owner || '—'}</div>
+        ${teamName ? `<div style="font-size:0.78rem;color:var(--wc-muted);margin-top:4px;">${FLAGS[teamName]||'🌐'} ${teamName}</div>` : ''}
         ${pts != null ? `
-          <div style="margin-top:12px;display:inline-flex;align-items:center;justify-content:center;
+          <div style="margin-top:10px;display:inline-flex;align-items:center;justify-content:center;
             background:var(--wc-gold);color:var(--wc-dark);font-family:'Bebas Neue',cursive;
-            font-size:1.6rem;min-width:52px;height:52px;border-radius:10px;padding:0 12px;">
+            font-size:1.4rem;min-width:48px;height:44px;border-radius:8px;padding:0 10px;">
             ${pts} pts
           </div>` : ''}
       `}
@@ -941,38 +971,78 @@ function renderPodium() {
   `;
 
   document.getElementById('podium-content').innerHTML = `
-    <div style="margin-bottom:24px;">
-      <div style="font-family:'Bebas Neue',cursive;font-size:1.6rem;color:var(--wc-gold);letter-spacing:3px;margin-bottom:6px;">🏆 Prize Winners</div>
-      <div style="font-size:0.82rem;color:var(--wc-muted);">
-        ${tournamentOver
-          ? 'The tournament is over — congratulations to all winners!'
-          : 'Prize winners will be announced at the end of the tournament. Current standings shown where available.'}
+    <div style="margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div>
+        <div style="font-family:'Bebas Neue',cursive;font-size:1.6rem;color:var(--wc-gold);letter-spacing:3px;margin-bottom:4px;">🏆 Prize Winners</div>
+        <div style="font-size:0.8rem;color:var(--wc-muted);">
+          ${tournamentOver ? 'The tournament is over — congratulations to all winners!' : 'Prize winners will be announced at the end of the tournament & after the Semi-Finals. Current standings shown where available.'}
+        </div>
+      </div>
+      <div style="background:rgba(76,175,80,0.12);border:1px solid rgba(76,175,80,0.3);border-radius:10px;padding:10px 18px;text-align:center;">
+        <div style="font-size:0.7rem;color:var(--wc-muted);text-transform:uppercase;letter-spacing:1px;">Total Prize Pot</div>
+        <div style="font-family:'Bebas Neue',cursive;font-size:2rem;color:#4CAF50;letter-spacing:1px;">£240</div>
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:32px;">
-      ${podiumCard('🥇','1st Place','Winner',
+    <!-- Main prizes -->
+    <div style="font-family:'Bebas Neue',cursive;font-size:0.9rem;color:var(--wc-muted);letter-spacing:2px;margin-bottom:10px;">MAIN PRIZES</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:28px;">
+      ${podiumCard('🥇','1st Place','£80','Winner',
         ownerOfTeam(first) || '?', first, null,
-        'Owner of the World Cup winning team (Final winner)',
+        'Owner of the World Cup winning team',
         !finalResult
       )}
-      ${podiumCard('🥈','2nd Place','Runner-up',
+      ${podiumCard('🥈','2nd Place','£40','Runner-up',
         ownerOfTeam(second) || '?', second, null,
         'Owner of the team that loses the Final',
         !finalResult
       )}
-      ${podiumCard('🥉','3rd Place','Most Points',
-        third?.owner, null, third?.pts,
-        'Player with the most total points across all their teams',
-        false
+      ${podiumCard('🥉','3rd Place','£30','Semi-Final Loser',
+        third?.owner || '?', third?.team || null, null,
+        'Owner of the team that loses Semi-Final 1',
+        !semisPlayed
       )}
-      ${podiumCard('🏅','Wooden Spoon','Least Points',
-        woodenSpoon?.owner, null, woodenSpoon?.pts,
-        'Player with the fewest total points across all their teams',
-        false
+      ${podiumCard('4️⃣','4th Place','£30','Semi-Final Loser',
+        fourth?.owner || '?', fourth?.team || null, null,
+        'Owner of the team that loses Semi-Final 2',
+        !semisPlayed
       )}
     </div>
 
+    <!-- Group winners -->
+    <div style="font-family:'Bebas Neue',cursive;font-size:0.9rem;color:var(--wc-muted);letter-spacing:2px;margin-bottom:10px;">GROUP WINNERS — £5 EACH</div>
+    <div style="background:var(--wc-card);border:1px solid var(--wc-border);border-radius:12px;padding:16px;margin-bottom:28px;">
+      ${Object.keys(GROUPS).sort().length === 0 ? '<div style="color:var(--wc-muted);font-size:0.82rem;">No group games played yet</div>' : `
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;">
+          ${Object.keys(GROUPS).sort().map(g => {
+            const gw = groupWinners[g];
+            return `<div style="background:rgba(255,255,255,0.04);border:1px solid var(--wc-border);border-radius:8px;padding:10px 12px;">
+              <div style="font-family:'Bebas Neue',cursive;color:var(--wc-gold);font-size:0.85rem;letter-spacing:1px;margin-bottom:4px;">GROUP ${g}</div>
+              ${gw ? `
+                <div style="font-size:0.9rem;">${FLAGS[gw.team]||'🌐'} ${gw.team}</div>
+                <div style="font-size:0.75rem;color:var(--wc-muted);margin-top:2px;">Owner: <strong style="color:var(--wc-text)">${gw.owner}</strong></div>
+                <div style="font-size:0.75rem;color:#4CAF50;margin-top:2px;font-weight:600;">£5 prize</div>
+              ` : `<div style="font-size:0.75rem;color:var(--wc-muted);">Not yet decided</div>`}
+            </div>`;
+          }).join('')}
+        </div>
+        ${Object.keys(groupWinnerPrizes).length > 0 ? `
+          <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--wc-border);">
+            <div style="font-size:0.72rem;color:var(--wc-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Group Prize Summary</div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+              ${Object.entries(groupWinnerPrizes).sort((a,b)=>b[1].total-a[1].total).map(([owner, data]) => `
+                <span style="background:rgba(76,175,80,0.12);border:1px solid rgba(76,175,80,0.3);border-radius:6px;padding:4px 10px;font-size:0.8rem;">
+                  <strong>${owner}</strong> — <span style="color:#4CAF50;font-weight:700;">£${data.total}</span>
+                  <span style="color:var(--wc-muted);font-size:0.7rem;"> (${data.groups.map(t=>FLAGS[t]||'🌐').join(' ')})</span>
+                </span>
+              `).join('')}
+            </div>
+          </div>
+        ` : ''}
+      `}
+    </div>
+
+    <!-- Standings table -->
     <div class="section-card">
       <div class="section-card-header">📊 Current Standings</div>
       <div class="section-card-body" style="padding:0">
@@ -980,28 +1050,36 @@ function renderPodium() {
           <thead><tr>
             <th style="width:50px">Rank</th>
             <th>Player</th>
-            <th style="text-align:center">Total Pts</th>
+            <th style="text-align:center">Pts</th>
+            <th style="text-align:center;color:#4CAF50">Prize</th>
             <th>Teams</th>
           </tr></thead>
           <tbody>
             ${ranked.map((r, i) => {
               const rankClass = i===0?'rank-1':i===1?'rank-2':i===2?'rank-3':'rank-other';
-              const isLast = i === ranked.length - 1;
-              return `<tr style="${isLast?'background:rgba(139,96,64,0.08)':''}">
+              const mainPrize = semisPlayed && r.owner === third?.owner ? 30
+                              : semisPlayed && r.owner === fourth?.owner ? 30
+                              : 0;
+              const groupPrize = groupWinnerPrizes[r.owner]?.total || 0;
+              const totalPrize = mainPrize + groupPrize;
+              return `<tr>
                 <td><span class="rank-badge ${rankClass}">${i+1}</span></td>
                 <td><span style="display:inline-flex;align-items:center;gap:8px">
                   <span style="width:10px;height:10px;border-radius:50%;background:${OWNER_COLOR[r.owner]};display:inline-block"></span>
                   <strong>${r.owner}</strong>
-                  ${isLast ? '<span style="font-size:0.7rem;color:#8B6040;margin-left:4px">🏅 Wooden Spoon</span>' : ''}
                 </span></td>
                 <td style="text-align:center">
                   <span style="display:inline-flex;align-items:center;justify-content:center;
                     background:${r.pts>0?'var(--wc-gold)':'var(--wc-border)'};
                     color:${r.pts>0?'var(--wc-dark)':'var(--wc-muted)'};
-                    font-family:'Bebas Neue',cursive;font-size:1.2rem;
-                    min-width:36px;height:36px;border-radius:6px;padding:0 8px;">
+                    font-family:'Bebas Neue',cursive;font-size:1.1rem;
+                    min-width:32px;height:32px;border-radius:6px;padding:0 6px;">
                     ${r.pts}
                   </span>
+                </td>
+                <td style="text-align:center;font-weight:700;color:${totalPrize>0?'#4CAF50':'var(--wc-muted)'};">
+                  ${totalPrize>0?`£${totalPrize}`:'—'}
+                  ${groupPrize>0?`<div style="font-size:0.65rem;color:var(--wc-muted);font-weight:400;">incl. £${groupPrize} groups</div>`:''}
                 </td>
                 <td>${r.breakdown.map(t=>`<span class="owner-chip">${FLAGS[t.name]||'🌐'} ${t.name} <strong style="color:var(--wc-gold)">${t.pts}</strong></span>`).join('')}</td>
               </tr>`;
@@ -1684,7 +1762,13 @@ function showToast(msg) {
   }
 })();
 
-renderOverview();
+try {
+  renderPodium();
+} catch(e) {
+  console.error('renderPodium failed:', e);
+  document.getElementById('podium-content').innerHTML =
+    `<div style="color:red;padding:20px;">Error rendering podium: ${e.message}</div>`;
+}
 startLiveRefresh();
 </script>
 </body>
