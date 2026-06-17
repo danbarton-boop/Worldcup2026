@@ -937,7 +937,7 @@ function renderPodium() {
     groupWinnerPrizes[owner].groups.push(team);
   });
 
-  const podiumCard = (medal, title, prize, subtitle, owner, teamName, pts, description, locked) => `
+  const podiumCard = (medal, title, prize, subtitle, owner, teamName, pts, description, locked, lockedMsg) => `
     <div style="
       background:var(--wc-card);border:1px solid var(--wc-border);border-radius:12px;
       padding:24px 20px;text-align:center;position:relative;overflow:hidden;
@@ -955,7 +955,7 @@ function renderPodium() {
       <div style="font-size:0.72rem;color:var(--wc-muted);margin-bottom:14px;">${description}</div>
       ${locked ? `
         <div style="font-size:1.8rem;margin-bottom:6px;">🔒</div>
-        <div style="font-size:0.78rem;color:var(--wc-muted);">Announced after the Semi-Finals</div>
+        <div style="font-size:0.78rem;color:var(--wc-muted);">${lockedMsg}</div>
       ` : `
         <div style="font-size:0.82rem;color:var(--wc-muted);margin-bottom:4px;">${subtitle}</div>
         <div style="font-family:'Bebas Neue',cursive;font-size:2rem;color:var(--wc-white);line-height:1;">${owner || '—'}</div>
@@ -990,22 +990,22 @@ function renderPodium() {
       ${podiumCard('🥇','1st Place','£80','Winner',
         ownerOfTeam(first) || '?', first, null,
         'Owner of the World Cup winning team',
-        !finalResult
+        !finalResult, 'Announced after the Final'
       )}
       ${podiumCard('🥈','2nd Place','£40','Runner-up',
         ownerOfTeam(second) || '?', second, null,
         'Owner of the team that loses the Final',
-        !finalResult
+        !finalResult, 'Announced after the Final'
       )}
       ${podiumCard('🥉','3rd Place','£30','Semi-Final Loser',
         third?.owner || '?', third?.team || null, null,
         'Owner of the team that loses Semi-Final 1',
-        !semisPlayed
+        !semisPlayed, 'Announced after the Semi-Finals'
       )}
       ${podiumCard('4️⃣','4th Place','£30','Semi-Final Loser',
         fourth?.owner || '?', fourth?.team || null, null,
         'Owner of the team that loses Semi-Final 2',
-        !semisPlayed
+        !semisPlayed, 'Announced after the Semi-Finals'
       )}
     </div>
 
