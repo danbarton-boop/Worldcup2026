@@ -349,7 +349,7 @@
       <button class="nav-btn" onclick="showView('overview',event)">Overview</button>
       <button class="nav-btn" onclick="showView('groups',event)">Groups</button>
       <button class="nav-btn" onclick="showView('results',event)">Results</button>
-      <button class="nav-btn" onclick="showView('bracket',event)">Bracket</button>
+      <button class="nav-btn" onclick="showView('bracket',event)">Knock Out Stage</button>
       <button class="nav-btn" onclick="showView('owners',event)">My Teams</button>
     </nav>
     <div id="sync-badge" style="font-size:0.72rem;white-space:nowrap;display:flex;align-items:center;gap:6px;color:var(--wc-muted)">
@@ -702,11 +702,15 @@ async function fetchLiveScores() {
         venue: match.venue
       };
 
+      // Log every non-group match so we can see exact stage names
+      if (!group && stage !== 'GROUP_STAGE' && stage !== 'First stage') {
+        console.log(`📋 Non-group match: id=${match.id} | stage="${stage}" | group="${group}" | status=${status} | ${hName} vs ${aName}`);
+      }
+
       if (['GROUP_STAGE','First stage'].includes(stage) || group) {
         const found = findMatchKey(hName, aName);
         if (found) {
           const { key, swapped } = found;
-          // Only persist FINISHED results to localStorage
           if (status === 'FINISHED' && hScore != null && aScore != null) {
             const nh = swapped ? aScore : hScore, na = swapped ? hScore : aScore;
             if (!RESULTS[key] || RESULTS[key].h !== nh || RESULTS[key].a !== na) {
@@ -716,6 +720,67 @@ async function fetchLiveScores() {
           }
         } else if (status === 'FINISHED') {
           console.warn(`⚠️ Could not find match key for: ${hName} vs ${aName} (group: ${group})`);
+        }
+      }
+
+      // ── Auto-populate KO bracket from API ──
+      const API_KO_STAGE_MAP = {
+        'ROUND_OF_32':'r32','LAST_32':'r32','LAST_32_STAGE':'r32','ROUND_OF_32_STAGE':'r32',
+        'ROUND_OF_16':'r16','LAST_16':'r16','LAST_16_STAGE':'r16','ROUND_OF_16_STAGE':'r16',
+        'QUARTER_FINALS':'qf','QUARTER_FINAL_STAGE':'qf','QUARTER_FINALS_STAGE':'qf',
+        'SEMI_FINALS':'sf','SEMI_FINAL_STAGE':'sf','SEMI_FINALS_STAGE':'sf',
+        'FINAL':'f','FINAL_STAGE':'f',
+        'THIRD_PLACE':'3p','THIRD_PLACE_PLAYOFF':'3p',
+      };
+      const koRoundId = API_KO_STAGE_MAP[stage];
+      if (koRoundId && status === 'FINISHED' && hScore != null && aScore != null) {
+        const apiH = norm(hName||''), apiA = norm(aName||'');
+        // Find the matching KO slot — search ALL existing KO slots OR create a new one
+        // by matching team names. For R32 we also try slot resolution.
+        const round = KO_ROUNDS.find(r => r.id === koRoundId);
+        if (round) {
+          let savedToSlot = false;
+          // Try to find an existing slot whose teams match
+          for (let i = 0; i < round.count; i++) {
+            const koKey = `${koRoundId}_${i}`;
+            if (KO[koKey]?.fromApi) continue; // already filled from API
+            let slotHome = '', slotAway = '';
+            if (koRoundId === 'r32') {
+              slotHome = getTeamFromCode(R32_PAIRS[i][0]).name;
+              slotAway = getTeamFromCode(R32_PAIRS[i][1]).name;
+            } else {
+              const prev = KO_ROUNDS[KO_ROUNDS.indexOf(round)-1];
+              slotHome = KO[`${prev.id}_${i*2}`]?.winner   || '';
+              slotAway = KO[`${prev.id}_${i*2+1}`]?.winner || '';
+            }
+            const slotMatch = slotHome && slotAway && (
+              (apiH.toLowerCase()===slotHome.toLowerCase() && apiA.toLowerCase()===slotAway.toLowerCase()) ||
+              (apiH.toLowerCase()===slotAway.toLowerCase() && apiA.toLowerCase()===slotHome.toLowerCase())
+            );
+            if (slotMatch) {
+              const swapped = apiH.toLowerCase() !== slotHome.toLowerCase();
+              const h = swapped ? aScore : hScore;
+              const a = swapped ? hScore : aScore;
+              const winner = h > a ? slotHome : slotAway;
+              KO[koKey] = { h, a, winner, homeTeam: slotHome, awayTeam: slotAway, fromApi: true };
+              updated++; savedToSlot = true;
+              console.log(`✅ KO result: ${koKey} = ${slotHome} ${h}-${a} ${slotAway} → winner: ${winner}`);
+              break;
+            }
+          }
+          // If no slot matched (teams TBD / group stage still running), store by team names
+          // in the first empty slot so it's at least visible
+          if (!savedToSlot) {
+            const emptySlot = Array.from({length: round.count}, (_,i) => `${koRoundId}_${i}`)
+              .find(k => !KO[k]);
+            if (emptySlot) {
+              const h = hScore, a = aScore;
+              const winner = h > a ? apiH : apiA;
+              KO[emptySlot] = { h, a, winner, homeTeam: apiH, awayTeam: apiA, fromApi: true };
+              updated++;
+              console.log(`✅ KO result (by name): ${emptySlot} = ${apiH} ${h}-${a} ${apiA} → winner: ${winner}`);
+            }
+          }
         }
       }
     });
@@ -1315,6 +1380,7 @@ function renderResults() {
     <button class="sub-tab ${activeResultTab==='bydate'?'active':''}" onclick="setResultTab('bydate')">📅 Results by Date</button>
     <button class="sub-tab ${activeResultTab==='fixtures'?'active':''}" onclick="setResultTab('fixtures')">🗓️ Upcoming Fixtures</button>
     <button class="sub-tab ${activeResultTab==='bygroup'?'active':''}" onclick="setResultTab('bygroup')">🔠 By Group</button>
+    <button class="sub-tab ${activeResultTab==='knockout'?'active':''}" onclick="setResultTab('knockout')">⚡ Knock Out Stage</button>
   `;
   renderResultsContent();
 }
@@ -1374,6 +1440,8 @@ function filterMatches(list) {
 
 function getAllEnrichedMatches() {
   const all = [];
+
+  // ── Group stage ──
   Object.keys(GROUPS).forEach(g => {
     getGroupMatches(g).forEach((m, i) => {
       const apiM = Object.values(liveMatches).find(lm => {
@@ -1392,9 +1460,62 @@ function getAllEnrichedMatches() {
         utcDate: apiM?.utcDate || null,
         status:  apiM?.status  || (result ? 'FINISHED' : 'SCHEDULED'),
         isLive:  Boolean(result?.live) || ['IN_PLAY','PAUSED','LIVE'].includes(apiM?.status||''),
+        isKO: false,
       });
     });
   });
+
+  // ── KO stage — driven entirely from the API ──
+  // All KO fixtures and results come from liveMatches (which contains ALL matches from the API).
+  // We trust the API for correct teams, dates and results.
+  const KO_API_STAGES = {
+    'ROUND_OF_32':'Round of 32','LAST_32':'Round of 32','LAST_32_STAGE':'Round of 32','ROUND_OF_32_STAGE':'Round of 32',
+    'ROUND_OF_16':'Round of 16','LAST_16':'Round of 16','LAST_16_STAGE':'Round of 16','ROUND_OF_16_STAGE':'Round of 16',
+    'QUARTER_FINALS':'Quarter-Finals','QUARTER_FINAL_STAGE':'Quarter-Finals','QUARTER_FINALS_STAGE':'Quarter-Finals',
+    'SEMI_FINALS':'Semi-Finals','SEMI_FINAL_STAGE':'Semi-Finals','SEMI_FINALS_STAGE':'Semi-Finals',
+    'FINAL':'Final','FINAL_STAGE':'Final',
+    'THIRD_PLACE':'3rd Place Play-off','THIRD_PLACE_PLAYOFF':'3rd Place Play-off','THIRD_PLACE_STAGE':'3rd Place Play-off',
+  };
+
+  // API is the single source of truth for KO fixtures and results.
+  // Deduplicate by pairing team names (order-independent) within each round.
+  const seenPairings = new Set();
+  const seenIds = new Set();
+
+  Object.values(liveMatches).forEach(apiM => {
+    const label = KO_API_STAGES[apiM.stage];
+    if (!label) return;
+    if (seenIds.has(apiM.id)) return;
+    seenIds.add(apiM.id);
+
+    const home = norm(apiM.home||'TBD');
+    const away = norm(apiM.away||'TBD');
+
+    // Dedup key — same two teams in same round = same match regardless of order
+    const pairKey = `${label}:${[home,away].sort().join('|')}`;
+    if (seenPairings.has(pairKey)) return;
+    seenPairings.add(pairKey);
+
+    const hasScore = apiM.hScore != null && apiM.aScore != null;
+    const isLiveStatus = ['IN_PLAY','PAUSED','LIVE'].includes(apiM.status||'');
+    const result = hasScore
+      ? { h: apiM.hScore, a: apiM.aScore, live: isLiveStatus, minute: apiM.minute }
+      : null;
+
+    all.push({
+      key: `api_ko_${apiM.id}`,
+      home, away,
+      group: null, matchday: null,
+      koRound: label,
+      result,
+      apiMatch: apiM,
+      utcDate: apiM.utcDate || null,
+      status: apiM.status || (result ? 'FINISHED' : 'SCHEDULED'),
+      isLive: isLiveStatus && hasScore,
+      isKO: true,
+    });
+  });
+
   return all;
 }
 
@@ -1403,6 +1524,7 @@ function renderResultsContent() {
   if      (activeResultTab==='live')     renderLiveTab(el);
   else if (activeResultTab==='bydate')   renderByDateTab(el);
   else if (activeResultTab==='fixtures') renderFixturesTab(el);
+  else if (activeResultTab==='knockout') renderKnockoutTab(el);
   else                                   renderByGroupTab(el);
 }
 
@@ -1410,23 +1532,26 @@ function buildMatchCard(m) {
   const r = m.result, isLive = m.isLive;
   const hOwner = TEAM_OWNER[m.home], aOwner = TEAM_OWNER[m.away];
   const kickoff = m.utcDate ? new Date(m.utcDate) : null;
+  const isTBD = m.home === 'TBD' || m.away === 'TBD';
 
-  const scoreHtml = (m.apiMatch && m.apiMatch.hScore != null)
-    ? `<div class="match-score">${m.apiMatch.hScore}&nbsp;–&nbsp;${m.apiMatch.aScore}</div>`
-    : r != null
-      ? `<div style="display:flex;align-items:center;gap:6px;justify-content:center">
-          <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.h}" onchange="updateScore('${m.key}',this.value,null)" ${isLive?'readonly':''}>
-          <span style="color:var(--wc-muted)">–</span>
-          <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.a}" onchange="updateScore('${m.key}',null,this.value)" ${isLive?'readonly':''}>
-        </div>`
-      : `<div style="display:flex;flex-direction:column;align-items:center;gap:5px">
-          <div style="display:flex;align-items:center;gap:6px">
-            <input class="score-input" type="number" min="0" max="30" placeholder="0" id="h_${m.key}">
+  const scoreHtml = isTBD
+    ? `<div style="font-size:0.72rem;color:var(--wc-muted);text-align:center">TBD</div>`
+    : (m.apiMatch && m.apiMatch.hScore != null)
+      ? `<div class="match-score">${m.apiMatch.hScore}&nbsp;–&nbsp;${m.apiMatch.aScore}</div>`
+      : r != null
+        ? `<div style="display:flex;align-items:center;gap:6px;justify-content:center">
+            <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.h}" onchange="updateScore('${m.key}',this.value,null)" ${isLive?'readonly':''}>
             <span style="color:var(--wc-muted)">–</span>
-            <input class="score-input" type="number" min="0" max="30" placeholder="0" id="a_${m.key}">
-          </div>
-          <button class="update-btn" onclick="setScore('${m.key}')">Save</button>
-        </div>`;
+            <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.a}" onchange="updateScore('${m.key}',null,this.value)" ${isLive?'readonly':''}>
+          </div>`
+        : `<div style="display:flex;flex-direction:column;align-items:center;gap:5px">
+            <div style="display:flex;align-items:center;gap:6px">
+              <input class="score-input" type="number" min="0" max="30" placeholder="0" id="h_${m.key}">
+              <span style="color:var(--wc-muted)">–</span>
+              <input class="score-input" type="number" min="0" max="30" placeholder="0" id="a_${m.key}">
+            </div>
+            <button class="update-btn" onclick="setScore('${m.key}')">Save</button>
+          </div>`;
 
   const statusBadge = isLive
     ? `<span class="match-status status-live">🔴 Live${r?.minute?' '+r.minute+"'":''}  </span>`
@@ -1440,19 +1565,23 @@ function buildMatchCard(m) {
 
   return `<div class="match-card">
     <div class="match-meta">
-      <span>Group ${m.group} · MD${m.matchday}</span>
+      <span>${m.isKO ? (m.koRound||'Knock Out') : `Group ${m.group} · MD${m.matchday}`}</span>
       ${statusBadge}
     </div>
     <div class="match-teams">
       <div class="match-team">
-        <div class="match-team-flag">${FLAGS[m.home]||'🌐'}</div>
-        <div class="match-team-name">${m.home}</div>
+        <div class="match-team-flag">${m.home==='TBD'?'⏳':FLAGS[m.home]||'🌐'}</div>
+        <div class="match-team-name" style="${m.home==='TBD'?'color:var(--wc-muted);font-style:italic':''}">
+          ${m.home.startsWith('Best 3rd')?'Best 3rd Place':m.home}
+        </div>
         ${hOwner?`<div class="match-team-owner">${hOwner}</div>`:''}
       </div>
       <div>${scoreHtml}</div>
       <div class="match-team">
-        <div class="match-team-flag">${FLAGS[m.away]||'🌐'}</div>
-        <div class="match-team-name">${m.away}</div>
+        <div class="match-team-flag">${m.away==='TBD'?'⏳':FLAGS[m.away]||'🌐'}</div>
+        <div class="match-team-name" style="${m.away==='TBD'?'color:var(--wc-muted);font-style:italic':''}">
+          ${m.away.startsWith('Best 3rd')?'Best 3rd Place':m.away}
+        </div>
         ${aOwner?`<div class="match-team-owner">${aOwner}</div>`:''}
       </div>
     </div>
@@ -1527,6 +1656,61 @@ function renderByGroupTab(el) {
   ).join('');
 }
 
+function renderKnockoutTab(el) {
+  const koMatches = filterMatches(getAllEnrichedMatches()).filter(m => m.isKO);
+
+  const ROUND_ORDER = [
+    'Round of 32','Round of 16','Quarter-Finals',
+    'Semi-Finals','3rd Place Play-off','Final'
+  ];
+
+  const byRound = {};
+  koMatches.forEach(m => {
+    const r = m.koRound || 'Knock Out';
+    (byRound[r] = byRound[r]||[]).push(m);
+  });
+
+  // Sort matches within each round by date
+  Object.values(byRound).forEach(matches => {
+    matches.sort((a,b) => {
+      if (!a.utcDate && !b.utcDate) return 0;
+      if (!a.utcDate) return 1;
+      if (!b.utcDate) return -1;
+      return new Date(a.utcDate) - new Date(b.utcDate);
+    });
+  });
+
+  const sortedRounds = [
+    ...ROUND_ORDER.filter(r => byRound[r]),
+    ...Object.keys(byRound).filter(r => !ROUND_ORDER.includes(r))
+  ];
+
+  if (!sortedRounds.length) {
+    el.innerHTML = `<div class="empty-state">
+      <div class="icon">⚡</div>
+      <div>Knock Out Stage fixtures loading…</div>
+      <div style="margin-top:8px;font-size:0.78rem;color:var(--wc-muted)">Waiting for API data</div>
+    </div>`;
+    return;
+  }
+
+  el.innerHTML = sortedRounds.map(round => {
+    const matches = byRound[round];
+    const played  = matches.filter(m => m.result && !m.isLive).length;
+    const live    = matches.filter(m => m.isLive).length;
+    const total   = matches.length;
+    const badge   = live > 0
+      ? `<span style="background:var(--wc-red);color:white;border-radius:10px;padding:1px 8px;font-size:0.65rem;margin-left:8px">🔴 ${live} Live</span>`
+      : played === total && total > 0
+        ? `<span style="background:rgba(0,166,81,0.2);color:var(--wc-green);border-radius:10px;padding:1px 8px;font-size:0.65rem;margin-left:8px">✓ Complete</span>`
+        : `<span style="color:var(--wc-muted);font-size:0.72rem;margin-left:8px">${played}/${total} played</span>`;
+    return `<div style="margin-bottom:28px">
+      <div class="round-section-title">⚡ ${round}${badge}</div>
+      <div class="matches-grid">${matches.map(buildMatchCard).join('')}</div>
+    </div>`;
+  }).join('');
+}
+
 function setScore(key) {
   const h = parseInt(document.getElementById('h_'+key)?.value);
   const a = parseInt(document.getElementById('a_'+key)?.value);
@@ -1552,52 +1736,141 @@ const KO_ROUNDS = [
   {id:'f',  label:'Final',count:1}
 ];
 const R32_PAIRS = [
-  ['A1','C2'],['B1','A2'],['C1','B2'],['D1','F2'],
-  ['E1','D2'],['F1','E2'],['G1','I2'],['H1','G2'],
-  ['I1','H2'],['J1','L2'],['K1','J2'],['L1','K2'],
-  ['Best3rd','Best3rd'],['Best3rd','Best3rd'],
-  ['Best3rd','Best3rd'],['Best3rd','Best3rd']
+  // Match 1-16: Official FIFA World Cup 2026 Round of 32 bracket
+  // Group winners vs runners-up / best 3rd placed teams
+  ['A1','B2'],  // Match 1
+  ['C1','D2'],  // Match 2
+  ['B1','A2'],  // Match 3
+  ['D1','C2'],  // Match 4
+  ['E1','F2'],  // Match 5
+  ['G1','H2'],  // Match 6
+  ['F1','E2'],  // Match 7
+  ['H1','G2'],  // Match 8
+  ['I1','J2'],  // Match 9
+  ['K1','L2'],  // Match 10
+  ['J1','I2'],  // Match 11
+  ['L1','K2'],  // Match 12
+  // 4 best 3rd-placed teams (from 12 groups — determined after group stage)
+  ['3rd_1','3rd_2'],  // Match 13
+  ['3rd_3','3rd_4'],  // Match 14
+  ['3rd_5','3rd_6'],  // Match 15
+  ['3rd_7','3rd_8'],  // Match 16
 ];
 
+// Track which 3rd-placed teams qualify — set after group stage
+// Format: array of {name, group} sorted by pts desc
+function getBest3rdTeams() {
+  const thirds = [];
+  Object.keys(GROUPS).sort().forEach(g => {
+    const s = calcStandings(g);
+    if (s.length >= 3 && s[2].mp > 0) {
+      thirds.push({ name: s[2].name, group: g, pts: s[2].pts, gd: s[2].gf - s[2].ga, gf: s[2].gf });
+    }
+  });
+  // Sort by pts desc, then GD, then GF
+  thirds.sort((a,b) => b.pts - a.pts || b.gd - a.gd || b.gf - a.gf);
+  return thirds.slice(0, 8); // Top 8 of 12 3rd-placed teams qualify
+}
+
 function getTeamFromCode(code) {
-  if (code.startsWith('Best')) return { name:'Best 3rd', owner:null, flag:'🌐' };
-  const g=code[0], pos=parseInt(code[1]);
-  const s=calcStandings(g);
-  const team=s[pos-1]?.name;
-  return team ? {name:team, owner:TEAM_OWNER[team], flag:FLAGS[team]||'🌐'} : {name:code, owner:null, flag:'?'};
+  // Handle best 3rd placed team codes
+  if (code.startsWith('3rd_')) {
+    const idx = parseInt(code.split('_')[1]) - 1;
+    const best3rd = getBest3rdTeams();
+    if (best3rd[idx]) {
+      const t = best3rd[idx];
+      return { name: t.name, owner: TEAM_OWNER[t.name], flag: FLAGS[t.name]||'🌐' };
+    }
+    return { name: `Best 3rd #${idx+1}`, owner: null, flag: '🌐' };
+  }
+  const g = code[0], pos = parseInt(code[1]);
+  const s = calcStandings(g);
+  const team = s[pos-1]?.name;
+  return team ? { name: team, owner: TEAM_OWNER[team], flag: FLAGS[team]||'🌐' } : { name: code, owner: null, flag: '?' };
+}
+
+function getTeamObj(name) {
+  if (!name || name === 'TBD') return { name: 'TBD', owner: null, flag: '' };
+  return { name, owner: TEAM_OWNER[name], flag: FLAGS[name]||'🌐' };
 }
 
 function renderBracket() {
   const bracketEl = document.getElementById('bracket');
   bracketEl.innerHTML = '';
+
+  // Build a map of KO matches from the API keyed by round label
+  const KO_API_STAGE_LABELS = {
+    'ROUND_OF_32':'r32','LAST_32':'r32','ROUND_OF_32_STAGE':'r32',
+    'ROUND_OF_16':'r16','LAST_16':'r16','ROUND_OF_16_STAGE':'r16',
+    'QUARTER_FINALS':'qf','QUARTER_FINAL_STAGE':'qf',
+    'SEMI_FINALS':'sf','SEMI_FINAL_STAGE':'sf',
+    'FINAL':'f','FINAL_STAGE':'f',
+  };
+
+  // Group API KO matches by round, sorted by date
+  const apiByRound = {};
+  Object.values(liveMatches).forEach(m => {
+    const roundId = KO_API_STAGE_LABELS[m.stage];
+    if (!roundId) return;
+    if (!apiByRound[roundId]) apiByRound[roundId] = [];
+    apiByRound[roundId].push(m);
+  });
+  Object.values(apiByRound).forEach(arr =>
+    arr.sort((a,b) => new Date(a.utcDate||0) - new Date(b.utcDate||0))
+  );
+
   KO_ROUNDS.forEach(round => {
     const roundDiv = document.createElement('div');
     roundDiv.className = 'bracket-round';
     roundDiv.innerHTML = `<div class="bracket-round-title">${round.label}</div>`;
     const matchesDiv = document.createElement('div');
     matchesDiv.className = 'bracket-matches';
-    matchesDiv.style.minHeight = `${round.count*80}px`;
+    matchesDiv.style.minHeight = `${round.count * 80}px`;
 
-    for (let i=0; i<round.count; i++) {
+    const apiMatches = apiByRound[round.id] || [];
+
+    for (let i = 0; i < round.count; i++) {
       const key = `${round.id}_${i}`;
-      let home, away;
-      if (round.id==='r32') {
-        home=getTeamFromCode(R32_PAIRS[i][0]);
-        away=getTeamFromCode(R32_PAIRS[i][1]);
+      let home, away, result;
+
+      if (apiMatches[i]) {
+        // Use real API data for this slot
+        const apiM = apiMatches[i];
+        home = getTeamObj(norm(apiM.home||'TBD'));
+        away = getTeamObj(norm(apiM.away||'TBD'));
+        const hasScore = apiM.hScore != null && apiM.aScore != null && apiM.status === 'FINISHED';
+        result = hasScore ? { h: apiM.hScore, a: apiM.aScore } : null;
+        // Also sync winner into KO for podium/subsequent round tracking
+        if (hasScore && !KO[key]) {
+          const winner = apiM.hScore > apiM.aScore ? norm(apiM.home) : norm(apiM.away);
+          KO[key] = { h: apiM.hScore, a: apiM.aScore, winner, homeTeam: norm(apiM.home), awayTeam: norm(apiM.away), fromApi: true };
+        }
       } else {
-        const prev = KO_ROUNDS[KO_ROUNDS.indexOf(round)-1];
-        home = KO[`${prev.id}_${i*2}`]   ? getTeamFromCode(KO[`${prev.id}_${i*2}`].winner)   : {name:'TBD',owner:null,flag:''};
-        away = KO[`${prev.id}_${i*2+1}`] ? getTeamFromCode(KO[`${prev.id}_${i*2+1}`].winner) : {name:'TBD',owner:null,flag:''};
+        // Fall back to KO bracket data or TBD
+        const prev = round.id !== 'r32' ? KO_ROUNDS[KO_ROUNDS.indexOf(round)-1] : null;
+        if (prev) {
+          home = KO[`${prev.id}_${i*2}`]   ? getTeamObj(KO[`${prev.id}_${i*2}`].winner)   : { name:'TBD', owner:null, flag:'' };
+          away = KO[`${prev.id}_${i*2+1}`] ? getTeamObj(KO[`${prev.id}_${i*2+1}`].winner) : { name:'TBD', owner:null, flag:'' };
+        } else {
+          home = { name:'TBD', owner:null, flag:'' };
+          away = { name:'TBD', owner:null, flag:'' };
+        }
+        result = KO[key] ? { h: KO[key].h, a: KO[key].a } : null;
       }
-      const result=KO[key];
+
+      const hWin = result && result.h > result.a;
+      const aWin = result && result.a > result.h;
+
       matchesDiv.innerHTML += `<div class="bracket-match" onclick="editKO('${key}','${home.name}','${away.name}')">
-        <div class="bracket-team ${result&&result.h>result.a?'winner':''} ${home.name==='TBD'?'tbd':''}">
-          <span class="bracket-flag">${home.flag}</span> <span>${home.name}</span>
+        <div class="bracket-team ${hWin?'winner':''} ${home.name==='TBD'?'tbd':''}">
+          <span class="bracket-flag">${home.flag||'⏳'}</span>
+          <span>${home.name}</span>
           ${home.owner?`<span class="bracket-owner">(${home.owner})</span>`:''}
           ${result?`<span class="bracket-score">${result.h}</span>`:''}
         </div>
-        <div class="bracket-team ${result&&result.a>result.h?'winner':''} ${away.name==='TBD'?'tbd':''}">
-          <span class="bracket-flag">${away.flag}</span> <span>${away.name}</span>
+        <div class="bracket-team ${aWin?'winner':''} ${away.name==='TBD'?'tbd':''}">
+          <span class="bracket-flag">${away.flag||'⏳'}</span>
+          <span>${away.name}</span>
           ${away.owner?`<span class="bracket-owner">(${away.owner})</span>`:''}
           ${result?`<span class="bracket-score">${result.a}</span>`:''}
         </div>
@@ -1748,17 +2021,29 @@ function showToast(msg) {
     console.log('Clearing old-format result keys from localStorage');
     localStorage.removeItem('wc2026_results');
     RESULTS = {};
-    return;
+  } else {
+    // Remove any stale live scores (live:true) that were incorrectly persisted
+    Object.keys(old).forEach(k => {
+      if (old[k].live === true) { delete old[k]; changed = true; }
+    });
+    if (changed) {
+      localStorage.setItem('wc2026_results', JSON.stringify(old));
+      RESULTS = old;
+      console.log('Cleaned stale live scores from localStorage');
+    }
   }
 
-  // Remove any stale live scores (live:true) that were incorrectly persisted
-  Object.keys(old).forEach(k => {
-    if (old[k].live === true) { delete old[k]; changed = true; }
-  });
-  if (changed) {
-    localStorage.setItem('wc2026_results', JSON.stringify(old));
-    RESULTS = old;
-    console.log('Cleaned stale live scores from localStorage');
+  // Clear corrupted KO data — if any r32 slot has fromApi:true but
+  // all 16 slots have the same winner (Canada bug), wipe KO entirely
+  const koData = JSON.parse(localStorage.getItem('wc2026_ko') || '{}');
+  const r32Winners = Object.keys(koData)
+    .filter(k => k.startsWith('r32_'))
+    .map(k => koData[k]?.winner);
+  const uniqueWinners = new Set(r32Winners.filter(Boolean));
+  if (r32Winners.length > 2 && uniqueWinners.size <= 2) {
+    console.log('🧹 Clearing corrupted KO data (duplicate winners detected)');
+    localStorage.removeItem('wc2026_ko');
+    KO = {};
   }
 })();
 
