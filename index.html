@@ -865,8 +865,18 @@ function calcStandings(group) {
 
   // Step 2: overlay live API scores — these take priority over stored results
   // for any match currently in play, and add any finished matches the API
-  // returned that weren't already in RESULTS
+  // returned that weren't already in RESULTS.
+  // IMPORTANT: always align scores to OUR fixture's home/away order
+  // (from getGroupMatches), not the API's own home/away designation,
+  // since the API may report the same fixture with home/away swapped
+  // relative to our synthetic alphabetical ordering.
   const groupKey = `GROUP_${group}`;
+  const fixtureMap = {}; // "teamA|teamB" (sorted) -> fixture {home, away}
+  getGroupMatches(group).forEach(m => {
+    const sortedKey = [m.home.toLowerCase(), m.away.toLowerCase()].sort().join('|');
+    fixtureMap[sortedKey] = m;
+  });
+
   Object.values(liveMatches).forEach(m => {
     const isThisGroup = m.group === groupKey ||
                         m.group === group ||
@@ -875,15 +885,21 @@ function calcStandings(group) {
     if (!PLAYED_STATUSES.has(m.status)) return; // skip future fixtures
     if (m.hScore == null || m.aScore == null) return; // skip if no score
 
-    const h = norm(m.home || '');
-    const a = norm(m.away || '');
+    const apiHome = norm(m.home || '');
+    const apiAway = norm(m.away || '');
+    const sortedKey = [apiHome.toLowerCase(), apiAway.toLowerCase()].sort().join('|');
+    const fixture = fixtureMap[sortedKey];
+    if (!fixture) return; // unknown pairing — skip
 
-    // Remove any existing stored result for this pairing and replace with API data
+    // Determine if API's home/away matches OUR fixture's home/away
+    const swapped = apiHome.toLowerCase() !== fixture.home.toLowerCase();
+    const h = swapped ? m.aScore : m.hScore;
+    const a = swapped ? m.hScore : m.aScore;
+
     const existingIdx = matchResults.findIndex(r =>
-      (r.home.toLowerCase() === h.toLowerCase() && r.away.toLowerCase() === a.toLowerCase()) ||
-      (r.home.toLowerCase() === a.toLowerCase() && r.away.toLowerCase() === h.toLowerCase())
+      (r.home.toLowerCase() === fixture.home.toLowerCase() && r.away.toLowerCase() === fixture.away.toLowerCase())
     );
-    const entry = { home: h, away: a, h: m.hScore, a: m.aScore };
+    const entry = { home: fixture.home, away: fixture.away, h, a };
     if (existingIdx >= 0) matchResults[existingIdx] = entry;
     else matchResults.push(entry);
   });
@@ -1536,22 +1552,20 @@ function buildMatchCard(m) {
 
   const scoreHtml = isTBD
     ? `<div style="font-size:0.72rem;color:var(--wc-muted);text-align:center">TBD</div>`
-    : (m.apiMatch && m.apiMatch.hScore != null)
-      ? `<div class="match-score">${m.apiMatch.hScore}&nbsp;–&nbsp;${m.apiMatch.aScore}</div>`
-      : r != null
-        ? `<div style="display:flex;align-items:center;gap:6px;justify-content:center">
-            <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.h}" onchange="updateScore('${m.key}',this.value,null)" ${isLive?'readonly':''}>
+    : r != null
+      ? `<div style="display:flex;align-items:center;gap:6px;justify-content:center">
+          <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.h}" onchange="updateScore('${m.key}',this.value,null)" ${isLive?'readonly':''}>
+          <span style="color:var(--wc-muted)">–</span>
+          <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.a}" onchange="updateScore('${m.key}',null,this.value)" ${isLive?'readonly':''}>
+        </div>`
+      : `<div style="display:flex;flex-direction:column;align-items:center;gap:5px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <input class="score-input" type="number" min="0" max="30" placeholder="0" id="h_${m.key}">
             <span style="color:var(--wc-muted)">–</span>
-            <input class="score-input${isLive?' score-live':''}" type="number" min="0" max="30" value="${r.a}" onchange="updateScore('${m.key}',null,this.value)" ${isLive?'readonly':''}>
-          </div>`
-        : `<div style="display:flex;flex-direction:column;align-items:center;gap:5px">
-            <div style="display:flex;align-items:center;gap:6px">
-              <input class="score-input" type="number" min="0" max="30" placeholder="0" id="h_${m.key}">
-              <span style="color:var(--wc-muted)">–</span>
-              <input class="score-input" type="number" min="0" max="30" placeholder="0" id="a_${m.key}">
-            </div>
-            <button class="update-btn" onclick="setScore('${m.key}')">Save</button>
-          </div>`;
+            <input class="score-input" type="number" min="0" max="30" placeholder="0" id="a_${m.key}">
+          </div>
+          <button class="update-btn" onclick="setScore('${m.key}')">Save</button>
+        </div>`;
 
   const statusBadge = isLive
     ? `<span class="match-status status-live">🔴 Live${r?.minute?' '+r.minute+"'":''}  </span>`
